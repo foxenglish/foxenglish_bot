@@ -337,7 +337,7 @@ def main():
     app.add_handler(CommandHandler("admin_list", admin_list))
     app.add_handler(CommandHandler("myid", myid))
 
-    app.run_polling()
+    asyncio.run(application.run_polling())
 
     #Запускаем фоновую задачу для напоминаний
     async def run():
@@ -347,4 +347,5 @@ def main():
     asyncio.run(run())
 
 if __name__ == "__main__":
+
     main()
