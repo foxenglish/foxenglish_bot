@@ -66,48 +66,54 @@ async def cleanup_old_bookings():
 async def send_reminders(app):
     """Фоновая задача — отправляет напоминания за 24 часа и за 3 часа."""
     while True:
-        now = datetime.utcnow()
-        async with aiosqlite.connect(DB_PATH) as db:
-            cur = await db.execute(
-                "SELECT id, user_id, class_name, date, time, reminded_24h, reminded_3h FROM bookings"
-            )
-            rows = await cur.fetchall()
+        try:
+            now = datetime.utcnow()
+            async with aiosqlite.connect(DB_PATH) as db:
+                cur = await db.execute(
+                    "SELECT id, user_id, class_name, date, time, reminded_24h, reminded_3h FROM bookings"
+                )
+                rows = await cur.fetchall()
 
-            for r in rows:
-                booking_id, user_id, class_name, date_str, time_str, reminded_24h, reminded_3h = r
-                try:
-                    # Формируем datetime занятия в UTC (Москва = UTC+3)
-                    local_time = datetime.strptime(f"{date_str} {time_str[:5]}", "%Y-%m-%d %H:%M")
-                    class_time_utc = local_time - timedelta(hours=3)
+                for r in rows:
+                    booking_id, user_id, class_name, date_str, time_str, reminded_24h, reminded_3h = r
+                    try:
+                        # Формируем datetime занятия в UTC (Москва = UTC+3)
+                        local_time = datetime.strptime(f"{date_str} {time_str[:5]}", "%Y-%m-%d %H:%M")
+                        class_time_utc = local_time - timedelta(hours=3)
 
-                    hours_left = (class_time_utc - now).total_seconds() / 3600
+                        hours_left = (class_time_utc - now).total_seconds() / 3600
 
-                    # Напоминание за 24 часа
-                    if 23 <= hours_left <= 24 and not reminded_24h:
-                        text = (
-                            f"⏰ Напоминание!\n"
-                            f"Вы записаны на онлайн занятие FoxEnglish {class_name} {date_str} в {time_str} (по Москве).\n"
-                            f"До начала осталось примерно 24 часа! Мы вам пришлём ссылку на заниятие за 15 минут"
-                        )
-                        await app.bot.send_message(chat_id=user_id, text=text)
-                        await db.execute("UPDATE bookings SET reminded_24h=1 WHERE id=?", (booking_id,))
-                        await db.commit()
+                        # Напоминание за 24 часа
+                        if 23 <= hours_left <= 24 and not reminded_24h:
+                            text = (
+                                f"⏰ Напоминание!\n"
+                                f"Вы записаны на онлайн занятие FoxEnglish {class_name} {date_str} в {time_str} (по Москве).\n"
+                                f"До начала осталось примерно 24 часа! Мы вам пришлём ссылку на заниятие за 15 минут"
+                            )
+                            await app.bot.send_message(chat_id=user_id, text=text)
+                            await db.execute("UPDATE bookings SET reminded_24h=1 WHERE id=?", (booking_id,))
+                            await db.commit()
 
-                    # Напоминание за 3 часа
-                    elif 2.5 <= hours_left <= 3.5 and not reminded_3h:
-                        text = (
-                            f"📢 Напоминание!\n"
-                            f"Ваше онлайн занятие FoxEnglish {class_name} начнётся через 3 часа! Мы вам пришлём ссылку на заниятие за 15 минут\n"
-                            f"Дата: {date_str}, время: {time_str} (по Москве)."
-                        )
-                        await app.bot.send_message(chat_id=user_id, text=text)
-                        await db.execute("UPDATE bookings SET reminded_3h=1 WHERE id=?", (booking_id,))
-                        await db.commit()
+                        # Напоминание за 3 часа
+                        elif 2.5 <= hours_left <= 3.5 and not reminded_3h:
+                            text = (
+                                f"📢 Напоминание!\n"
+                                f"Ваше онлайн занятие FoxEnglish {class_name} начнётся через 3 часа! Мы вам пришлём ссылку на заниятие за 15 минут\n"
+                                f"Дата: {date_str}, время: {time_str} (по Москве)."
+                            )
+                            await app.bot.send_message(chat_id=user_id, text=text)
+                            await db.execute("UPDATE bookings SET reminded_3h=1 WHERE id=?", (booking_id,))
+                            await db.commit()
 
-                except Exception as e:
-                    print(f"⚠️ Ошибка при обработке напоминания для {booking_id}: {e}")
+                    except Exception as e:
+                        print(f"⚠️ Ошибка при обработке напоминания для {booking_id}: {e}")
 
-        await asyncio.sleep(900)  # проверять каждые 15 минут
+            await asyncio.sleep(900)  # проверять каждые 15 минут
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"⚠️ Ошибка в send_reminders: {e}")
+            await asyncio.sleep(60)  # ждем минуту перед повтором
 
 
 # --- Вспомогательные клавиатуры ---
@@ -306,13 +312,23 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Ваш chat_id: {update.effective_chat.id}")
 
 # --- main ---
+async def post_init(app):
+    """Инициализация после запуска бота"""
+    # Инициализация БД и очистка старых записей
+    await init_db()
+    await cleanup_old_bookings()
+    
+    # Запускаем фоновую задачу для напоминаний
+    asyncio.create_task(send_reminders(app))
+
 def main():
+    """Точка входа - создает event loop и запускает бота"""
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(init_db())
-    asyncio.run(cleanup_old_bookings())  # <-- добавлено автоочищение при запуске
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # Создаем приложение с post_init callback
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
+    # Настраиваем handlers
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -330,22 +346,16 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel_handler)],
         allow_reentry=True,
+        per_message=False,  # Исправление предупреждения
     )
 
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("mybookings", mybookings))
     app.add_handler(CommandHandler("admin_list", admin_list))
     app.add_handler(CommandHandler("myid", myid))
-
-    asyncio.run(application.run_polling())
-
-    #Запускаем фоновую задачу для напоминаний
-    async def run():
-        asyncio.create_task(send_reminders(app))
-        await app.run_polling()
-
-    asyncio.run(run())
+    
+    # Запускаем бота (run_polling сам создаст event loop)
+    app.run_polling()
 
 if __name__ == "__main__":
-
     main()
