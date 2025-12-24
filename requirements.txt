@@ -1,4 +1,0 @@
-python-telegram-bot==20.4
-aiosqlite==0.18.0
-python-dotenv==1.0.0
-requests==2.32.0
